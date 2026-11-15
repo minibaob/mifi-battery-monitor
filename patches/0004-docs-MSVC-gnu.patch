@@ -1,0 +1,53 @@
+From 9af0c1c5ca53eac1235479dca84f54f83200958b Mon Sep 17 00:00:00 2001
+From: mifi-dev <dev@local>
+Date: Sat, 14 Nov 2026 22:56:46 +0800
+Subject: [PATCH 4/6] =?UTF-8?q?docs:=20=E8=AE=B0=E5=BD=95=E6=97=A0=20MSVC?=
+ =?UTF-8?q?=20=E7=8E=AF=E5=A2=83=E4=B8=8B=E7=9A=84=20gnu=20=E6=9E=84?=
+ =?UTF-8?q?=E5=BB=BA=E6=96=B9=E5=BC=8F=E4=B8=8E=E8=BF=90=E8=A1=8C=E9=99=90?=
+ =?UTF-8?q?=E5=88=B6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ docs/mifi-battery.md | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/docs/mifi-battery.md b/docs/mifi-battery.md
+index c1360b1..b6de944 100644
+--- a/docs/mifi-battery.md
++++ b/docs/mifi-battery.md
+@@ -70,3 +70,30 @@ mifi_cooldown=30
+ ```
+ 
+ 默认 `mifi_enabled=0`，需要在设置里手动开启，避免未使用该设备的用户产生无效网络请求。
++
++## 本地构建（无 MSVC / 无管理员权限）
++
++本机没有 MSVC、Windows SDK，且当前账户不是管理员，因此未使用官方 msvc 目标，改为从零搭建的
++`x86_64-pc-windows-gnu` 工具链（rustc 1.100.0 gnu host + mingw-w64 gcc 16.2）。
++
++```bash
++export PATH="/d/dev/msys64/msys64/mingw64/bin:/d/dev/rust/tcgnu/bin:$PATH"
++export CARGO_HOME="D:/dev/rust/cargo"
++cargo test --lib                              # 单元测试
++RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin daozai
++```
++
++产物：`target/release/daozai.exe`（约 20 MB，静态 CRT，只依赖系统 DLL）。
++
++已知差异与限制：
++
++| 项 | 官方 msvc 构建 | 本次 gnu 构建 |
++|---|---|---|
++| 目标三元组 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-gnu` |
++| CRT | 静态（`.cargo/config.toml` 已配） | 需手动加 `+crt-static`，否则依赖 `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` |
++| 图标资源 | 由 `build.rs` 调用 `rc.exe` 嵌入 | **未嵌入**（无 `rc.exe`，构建时跳过，任务栏/资源管理器显示默认图标） |
++| 自动更新 | 拉官方 release 并覆盖自身 | 会拉官方 msvc 包覆盖，等于丢掉本构建 |
++| 代码签名 | 有（官方签名） | 无，首次运行 SmartScreen 提示 |
++| 单实例 | `tray::single_instance()` | 相同，官方岛仔在跑时本 exe 会立即退出（退出码 0） |
++
++结论：gnu 构建适合**本地验证功能**，不适合当正式分发产物；对外发布仍应以 msvc 构建为准。
+-- 
+2.55.0.windows.5
+

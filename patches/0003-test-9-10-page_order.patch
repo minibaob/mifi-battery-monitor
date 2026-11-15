@@ -1,0 +1,73 @@
+From 768574219bc439dd21bfbdbb5b4a0248c3edee61 Mon Sep 17 00:00:00 2001
+From: mifi-dev <dev@local>
+Date: Sat, 14 Nov 2026 22:50:34 +0800
+Subject: [PATCH 3/6] =?UTF-8?q?test:=20=E9=A1=B5=E9=9D=A2=E6=95=B0=209?=
+ =?UTF-8?q?=E2=86=9210=20=E5=90=8E=E5=90=8C=E6=AD=A5=E6=B5=8B=E8=AF=95?=
+ =?UTF-8?q?=E6=9C=9F=E6=9C=9B=EF=BC=9Bpage=5Forder=20=E6=81=A2=E5=A4=8D?=
+ =?UTF-8?q?=E3=80=8C=E5=AE=8C=E6=95=B4=E6=8E=92=E5=88=97=E3=80=8D=E6=A0=A1?=
+ =?UTF-8?q?=E9=AA=8C=E8=AF=AD=E4=B9=89?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/model.rs    | 9 +++++++--
+ src/ui_tests.rs | 8 ++++----
+ 2 files changed, 11 insertions(+), 6 deletions(-)
+
+diff --git a/src/model.rs b/src/model.rs
+index 010fd8c..2583a34 100644
+--- a/src/model.rs
++++ b/src/model.rs
+@@ -329,8 +329,13 @@ impl Settings {
+                     if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
+                         let total=crate::app::PAGE_NAMES.len();
+                         // 先校验：不能越界、不能重复。非法配置整条丢弃，沿用默认顺序。
+-                        let sane=order.len()<=total
+-                            && order.iter().enumerate().all(|(i,&page)|page<total && !order[..i].contains(&page));
++                        // 只接受「长度接近总数、且正好是 0..len 的一个排列」的顺序。
++                        // 这样既能兼容旧版本更短的配置（缺的页补在末尾），又不会放过
++                        // 含重复或乱序缺项的非法值。
++                        let mut sorted=order.clone();
++                        sorted.sort_unstable();
++                        let exact=sorted.iter().copied().eq(0..order.len());
++                        let sane=exact && order.len()>=total.saturating_sub(2);
+                         if sane {
+                             // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
+                             for page in 0..total {
+diff --git a/src/ui_tests.rs b/src/ui_tests.rs
+index 6ff2ee5..614b6b7 100644
+--- a/src/ui_tests.rs
++++ b/src/ui_tests.rs
+@@ -76,7 +76,7 @@ fn weather_content_tap_switches_both_ways_with_a_short_transition(){
+ #[test]
+ fn weather_content_tap_keeps_other_controls_independent(){
+     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+-    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,0),(20.0,88.0,7)] {
++    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,9),(20.0,88.0,7)] {
+         let mut h=H::new();h.app.settings.pet=false;
+         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
+         h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,..Default::default()});
+@@ -608,8 +608,8 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
+         crate::model::Settings::load().save();
+         let saved=std::fs::read_to_string(directory.join("settings.txt")).unwrap();
+         for line in legacy.lines().filter(|line|!line.starts_with("visible_pages=")&&!line.starts_with("page_order=")){assert!(saved.lines().any(|value|value==line),"升级保存不能改变旧设置：{line}");}
+-        assert!(saved.lines().any(|value|value=="visible_pages=101111111"),"旧页面开关应保留，并默认开启天气页");
+-        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8"),"旧顺序应保留，并把天气页接在最后");
++        assert!(saved.lines().any(|value|value=="visible_pages=1011111111"),"旧页面开关应保留，并默认开启新增的天气页与随身 WiFi 页");
++        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8,9"),"旧顺序应保留，并把新增页面接在最后");
+     }
+     std::fs::write(directory.join("mail-accounts.json"),br#"[{"email":"OldUser@qq.com","provider":"qq","enabled":true},{"email":"old@icloud.com","provider":"icloud","enabled":false}]"#).unwrap();
+     let accounts=crate::mail::load_accounts();
+@@ -2433,7 +2433,7 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
+ fn navigation_wraps_between_all_pages_and_notification_settings_remain_accessible() {
+     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,9);
+-    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
++    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,68.0));assert_eq!(h.app.page,0);
+     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
+ }
+ 
+-- 
+2.55.0.windows.5
+

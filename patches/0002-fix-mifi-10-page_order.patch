@@ -1,0 +1,125 @@
+From bb3dcb509bbdfda86d9aa6fd19e6df0c316dd5e5 Mon Sep 17 00:00:00 2001
+From: mifi-dev <dev@local>
+Date: Sat, 14 Nov 2026 22:39:57 +0800
+Subject: [PATCH 2/6] =?UTF-8?q?fix(mifi):=20=E8=A1=A5=E7=AC=AC=2010=20?=
+ =?UTF-8?q?=E9=A1=B5=E6=8F=8F=E8=BF=B0=E4=BF=AE=E5=A4=8D=E8=B6=8A=E7=95=8C?=
+ =?UTF-8?q?=EF=BC=9B=E6=81=A2=E5=A4=8D=20page=5Forder=20=E9=9D=9E=E6=B3=95?=
+ =?UTF-8?q?=E5=80=BC=E6=8B=92=E7=BB=9D=E8=AF=AD=E4=B9=89=EF=BC=9B=E6=9B=B4?=
+ =?UTF-8?q?=E6=96=B0=E9=A1=B5=E9=9D=A2=E6=95=B0=E7=9B=B8=E5=85=B3=E6=B5=8B?=
+ =?UTF-8?q?=E8=AF=95?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ src/extras.rs   |  2 +-
+ src/model.rs    | 17 ++++++++++-------
+ src/ui_tests.rs | 14 +++++++-------
+ 3 files changed, 18 insertions(+), 15 deletions(-)
+
+diff --git a/src/extras.rs b/src/extras.rs
+index c431c06..c50fde6 100644
+--- a/src/extras.rs
++++ b/src/extras.rs
+@@ -1351,7 +1351,7 @@ impl App {
+                         });
+                         settings_label(ui,"功能页面");
+                         settings_card(ui,|ui|{
+-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报"];
++                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","随身 WiFi 电量与低电量提醒"];
+                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                             #[derive(Clone)]
+                             struct PageDrag(usize);
+diff --git a/src/model.rs b/src/model.rs
+index 0dc3391..010fd8c 100644
+--- a/src/model.rs
++++ b/src/model.rs
+@@ -327,14 +327,17 @@ impl Settings {
+                 }
+                 "page_order" => {
+                     if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
+-                        // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
+                         let total=crate::app::PAGE_NAMES.len();
+-                        for page in 0..total {
+-                            if order.len()>=total {break;}
+-                            if !order.contains(&page) {order.push(page);}
+-                        }
+-                        if order.len()==total && (0..total).all(|page|order.contains(&page)) {
+-                            s.page_order.copy_from_slice(&order);
++                        // 先校验：不能越界、不能重复。非法配置整条丢弃，沿用默认顺序。
++                        let sane=order.len()<=total
++                            && order.iter().enumerate().all(|(i,&page)|page<total && !order[..i].contains(&page));
++                        if sane {
++                            // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
++                            for page in 0..total {
++                                if order.len()>=total {break;}
++                                if !order.contains(&page) {order.push(page);}
++                            }
++                            if order.len()==total {s.page_order.copy_from_slice(&order);}
+                         }
+                     }
+                 }
+diff --git a/src/ui_tests.rs b/src/ui_tests.rs
+index 2063f14..6ff2ee5 100644
+--- a/src/ui_tests.rs
++++ b/src/ui_tests.rs
+@@ -2326,7 +2326,7 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
+     h.app.shelf.items.clear();h.app.todos.items.clear();
+     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+     h.hover(H::local(210.0,18.0),0.3);
+-    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,0]),(40.0,[8,7,6,5,4,3,2,1,0])] {
++    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,9,0]),(40.0,[9,8,7,6,5,4,3,2,1,0])] {
+         for page in pages {
+             h.wheel(delta);
+             assert_eq!(h.app.page,page,"滚轮翻页不能被空的置物架或待办卡住");
+@@ -2430,9 +2430,9 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
+ }
+ 
+ #[test]
+-fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
++fn navigation_wraps_between_all_pages_and_notification_settings_remain_accessible() {
+     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
++    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,9);
+     h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
+     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
+ }
+@@ -2990,7 +2990,7 @@ fn battery_module_can_disable_only_the_power_warning() {
+ fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
+     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+     let mut h=H::new();
+-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
++    for page in [1,3,4,6,7,8,9] {h.app.set_page_visible(page,false);}
+     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+     for expected in [2,5,0] {
+         h.click(H::local(398.0,68.0));
+@@ -3019,7 +3019,7 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
+     h.app.set_page_visible(4,false);
+     assert_eq!(h.app.page,0);
+     assert!(!h.app.is_editing());
+-    for page in [0,1,3,5,6,7,8] {h.app.set_page_visible(page,false);}
++    for page in [0,1,3,5,6,7,8,9] {h.app.set_page_visible(page,false);}
+     assert_eq!(h.app.page,2);
+     h.app.set_page_visible(2,false);
+     assert!(h.app.settings.visible_pages[2],"不能关闭最后一个页面");
+@@ -5669,7 +5669,7 @@ fn page_order_persists_and_controls_navigation() {
+     assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
+     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
+     assert_eq!(restarted.page(),5);
+-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
++    for page in [1,3,4,6,7,8,9] {h.app.set_page_visible(page,false);}
+     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+     for expected in [5,2,0] {
+         h.click(H::local(398.0,68.0));
+@@ -8373,7 +8373,7 @@ fn background_services_follow_the_module_switch(){
+ 
+ #[test]
+ fn every_module_settings_tab_maps_to_its_page(){
+-    let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气"];
++    let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气","随身 WiFi"];
+     let mut pages:Vec<_>=(0..titles.len()).filter_map(crate::extras::settings_tab_module).collect();
+     for tab in 0..titles.len() {
+         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
+-- 
+2.55.0.windows.5
+

@@ -27,6 +27,11 @@
 | `scripts/probe_battery.py` | 批量探测电量相关 AT 指令，输出矩阵 |
 | `scripts/battery_monitor.py` | 独立低电量监控（网页接口 → 阈值判断 → Bark/PushPlus） |
 
+## 补丁
+
+`patches/` 里是岛仔 Daozai 的 6 个补丁（`git am` 即可应用），实现"新增第 10 页：随身 WiFi 电量"。
+适用上游 v0.6.64，应用方法与冲突排查见 [patches/README.md](patches/README.md)。
+
 ## 环境
 
 - Windows 10/11

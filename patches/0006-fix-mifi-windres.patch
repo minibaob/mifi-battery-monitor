@@ -1,0 +1,214 @@
+From 3b2a6ecaede64153c8bdb3e7cf96164e01add865 Mon Sep 17 00:00:00 2001
+From: mifi-dev <dev@local>
+Date: Sun, 15 Nov 2026 11:44:40 +0800
+Subject: [PATCH 6/6] =?UTF-8?q?fix(mifi):=20=E6=9C=AA=E5=90=AF=E7=94=A8?=
+ =?UTF-8?q?=E6=80=81=E6=98=BE=E7=A4=BA=E3=80=81=E4=BD=8E=E7=94=B5=E9=87=8F?=
+ =?UTF-8?q?=E5=B2=9B=E5=86=85=E6=8F=90=E9=86=92=E3=80=81windres=20?=
+ =?UTF-8?q?=E6=B3=A8=E5=85=A5=E5=9B=BE=E6=A0=87=E8=B5=84=E6=BA=90?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ .gitignore                                |  4 ++++
+ docs/mifi-battery.md                      |  7 +++++--
+ patches/0001-feat-mifi-WiFi.patch         |  2 +-
+ patches/0002-fix-mifi-10-page_order.patch |  2 +-
+ patches/0003-test-9-10-page_order.patch   |  2 +-
+ patches/0004-docs-MSVC-gnu.patch          |  2 +-
+ src/app.rs                                | 10 +++++++++-
+ src/mifi.rs                               |  8 +++++---
+ src/mifi_ui.rs                            | 12 +++++++++---
+ 9 files changed, 36 insertions(+), 13 deletions(-)
+
+diff --git a/.gitignore b/.gitignore
+index 72b0628..43d4fd3 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,3 +13,7 @@
+ *.key
+ .DS_Store
+ Thumbs.db
++
++# 本地构建产物
++app_res.o
++patches/
+diff --git a/docs/mifi-battery.md b/docs/mifi-battery.md
+index b6de944..bed7e3f 100644
+--- a/docs/mifi-battery.md
++++ b/docs/mifi-battery.md
+@@ -80,7 +80,10 @@ mifi_cooldown=30
+ export PATH="/d/dev/msys64/msys64/mingw64/bin:/d/dev/rust/tcgnu/bin:$PATH"
+ export CARGO_HOME="D:/dev/rust/cargo"
+ cargo test --lib                              # 单元测试
+-RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin daozai
++# 图标 + 版本资源：build.rs 找不到 rc.exe，改用 mingw 的 windres 手工注入
++windres -c 65001 -i app.rc -o app_res.o -O coff
++RUSTFLAGS="-C target-feature=+crt-static" \
++  cargo rustc --release --bin daozai -- -C link-arg=$PWD/app_res.o
+ ```
+ 
+ 产物：`target/release/daozai.exe`（约 20 MB，静态 CRT，只依赖系统 DLL）。
+@@ -91,7 +94,7 @@ RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin daozai
+ |---|---|---|
+ | 目标三元组 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-gnu` |
+ | CRT | 静态（`.cargo/config.toml` 已配） | 需手动加 `+crt-static`，否则依赖 `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` |
+-| 图标资源 | 由 `build.rs` 调用 `rc.exe` 嵌入 | **未嵌入**（无 `rc.exe`，构建时跳过，任务栏/资源管理器显示默认图标） |
++| 图标资源 | 由 `build.rs` 调用 `rc.exe` 嵌入 | 用 mingw 的 `windres` 手工编译 `app.rc` 并 `-C link-arg` 注入，**图标与版本信息均已嵌入** |
+ | 自动更新 | 拉官方 release 并覆盖自身 | 会拉官方 msvc 包覆盖，等于丢掉本构建 |
+ | 代码签名 | 有（官方签名） | 无，首次运行 SmartScreen 提示 |
+ | 单实例 | `tray::single_instance()` | 相同，官方岛仔在跑时本 exe 会立即退出（退出码 0） |
+diff --git a/patches/0001-feat-mifi-WiFi.patch b/patches/0001-feat-mifi-WiFi.patch
+index 26a1a0b..4a83cd0 100644
+--- a/patches/0001-feat-mifi-WiFi.patch
++++ b/patches/0001-feat-mifi-WiFi.patch
+@@ -1,7 +1,7 @@
+ From 8e98904302eaa331d401ca43085610189a0ac015 Mon Sep 17 00:00:00 2001
+ From: mifi-dev <dev@local>
+ Date: Sat, 14 Nov 2026 22:22:12 +0800
+-Subject: [PATCH 1/4] =?UTF-8?q?feat(mifi):=20=E9=9A=8F=E8=BA=AB=20WiFi=20?=
++Subject: [PATCH 1/5] =?UTF-8?q?feat(mifi):=20=E9=9A=8F=E8=BA=AB=20WiFi=20?=
+  =?UTF-8?q?=E7=94=B5=E9=87=8F=E9=A1=B5=E3=80=81=E6=8F=90=E9=86=92=E7=8A=B6?=
+  =?UTF-8?q?=E6=80=81=E6=9C=BA=E4=B8=8E=E8=AE=BE=E7=BD=AE=E9=A1=B9?=
+ MIME-Version: 1.0
+diff --git a/patches/0002-fix-mifi-10-page_order.patch b/patches/0002-fix-mifi-10-page_order.patch
+index dbfcb19..2743375 100644
+--- a/patches/0002-fix-mifi-10-page_order.patch
++++ b/patches/0002-fix-mifi-10-page_order.patch
+@@ -1,7 +1,7 @@
+ From bb3dcb509bbdfda86d9aa6fd19e6df0c316dd5e5 Mon Sep 17 00:00:00 2001
+ From: mifi-dev <dev@local>
+ Date: Sat, 14 Nov 2026 22:39:57 +0800
+-Subject: [PATCH 2/4] =?UTF-8?q?fix(mifi):=20=E8=A1=A5=E7=AC=AC=2010=20?=
++Subject: [PATCH 2/5] =?UTF-8?q?fix(mifi):=20=E8=A1=A5=E7=AC=AC=2010=20?=
+  =?UTF-8?q?=E9=A1=B5=E6=8F=8F=E8=BF=B0=E4=BF=AE=E5=A4=8D=E8=B6=8A=E7=95=8C?=
+  =?UTF-8?q?=EF=BC=9B=E6=81=A2=E5=A4=8D=20page=5Forder=20=E9=9D=9E=E6=B3=95?=
+  =?UTF-8?q?=E5=80=BC=E6=8B=92=E7=BB=9D=E8=AF=AD=E4=B9=89=EF=BC=9B=E6=9B=B4?=
+diff --git a/patches/0003-test-9-10-page_order.patch b/patches/0003-test-9-10-page_order.patch
+index 64b670e..301cd8e 100644
+--- a/patches/0003-test-9-10-page_order.patch
++++ b/patches/0003-test-9-10-page_order.patch
+@@ -1,7 +1,7 @@
+ From 768574219bc439dd21bfbdbb5b4a0248c3edee61 Mon Sep 17 00:00:00 2001
+ From: mifi-dev <dev@local>
+ Date: Sat, 14 Nov 2026 22:50:34 +0800
+-Subject: [PATCH 3/4] =?UTF-8?q?test:=20=E9=A1=B5=E9=9D=A2=E6=95=B0=209?=
++Subject: [PATCH 3/5] =?UTF-8?q?test:=20=E9=A1=B5=E9=9D=A2=E6=95=B0=209?=
+  =?UTF-8?q?=E2=86=9210=20=E5=90=8E=E5=90=8C=E6=AD=A5=E6=B5=8B=E8=AF=95?=
+  =?UTF-8?q?=E6=9C=9F=E6=9C=9B=EF=BC=9Bpage=5Forder=20=E6=81=A2=E5=A4=8D?=
+  =?UTF-8?q?=E3=80=8C=E5=AE=8C=E6=95=B4=E6=8E=92=E5=88=97=E3=80=8D=E6=A0=A1?=
+diff --git a/patches/0004-docs-MSVC-gnu.patch b/patches/0004-docs-MSVC-gnu.patch
+index 82b6e6a..97a50bc 100644
+--- a/patches/0004-docs-MSVC-gnu.patch
++++ b/patches/0004-docs-MSVC-gnu.patch
+@@ -1,7 +1,7 @@
+ From 9af0c1c5ca53eac1235479dca84f54f83200958b Mon Sep 17 00:00:00 2001
+ From: mifi-dev <dev@local>
+ Date: Sat, 14 Nov 2026 22:56:46 +0800
+-Subject: [PATCH 4/4] =?UTF-8?q?docs:=20=E8=AE=B0=E5=BD=95=E6=97=A0=20MSVC?=
++Subject: [PATCH 4/5] =?UTF-8?q?docs:=20=E8=AE=B0=E5=BD=95=E6=97=A0=20MSVC?=
+  =?UTF-8?q?=20=E7=8E=AF=E5=A2=83=E4=B8=8B=E7=9A=84=20gnu=20=E6=9E=84?=
+  =?UTF-8?q?=E5=BB=BA=E6=96=B9=E5=BC=8F=E4=B8=8E=E8=BF=90=E8=A1=8C=E9=99=90?=
+  =?UTF-8?q?=E5=88=B6?=
+diff --git a/src/app.rs b/src/app.rs
+index 5a164c5..006ce62 100644
+--- a/src/app.rs
++++ b/src/app.rs
+@@ -1724,7 +1724,15 @@ impl App {
+         self.update_media(env,&ctx);
+         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
+         self.resident_power=(env.battery,env.charging);
+-        self.mifi.pump(&self.settings, env);
++        if let Some(notice) = self.mifi.pump(&self.settings, env) {
++            // 低电量提醒：先说话、再强制展开 6 秒并翻到随身 WiFi 页。
++            self.say(notice);
++            self.open = true;
++            self.forced_open_until = self.t + 6.0;
++            if self.settings.visible_pages[9] {
++                self.go(9, 1.0);
++            }
++        }
+         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
+         layout.reorder(&self.settings.resident_order);
+         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
+diff --git a/src/mifi.rs b/src/mifi.rs
+index 13b1db9..fee213e 100644
+--- a/src/mifi.rs
++++ b/src/mifi.rs
+@@ -287,7 +287,7 @@ pub fn push(token: &str, title: &str, content: &str) -> bool {
+ 
+ /// 后台轮询线程。配置变更时由上层丢弃旧 worker 再 `start` 一个新的。
+ pub struct Worker {
+-    rx: Receiver<Snapshot>,
++    rx: Receiver<(Snapshot, Option<String>)>,
+     wake: Sender<()>,
+ }
+ 
+@@ -306,10 +306,12 @@ impl Worker {
+                 if snapshot.online {
+                     previous = snapshot.clone();
+                 }
++                let mut notice = None;
+                 if let Some(message) = alerts.evaluate(&snapshot, &cfg, now) {
+                     push(&cfg.token, &message.title, &message.content);
++                    notice = Some(message.title.clone());
+                 }
+-                if tx.send(snapshot).is_err() {
++                if tx.send((snapshot, notice)).is_err() {
+                     break;
+                 }
+                 match wake_rx.recv_timeout(Duration::from_secs(cfg.interval_seconds.max(10))) {
+@@ -321,7 +323,7 @@ impl Worker {
+         Self { rx, wake }
+     }
+ 
+-    pub fn try_recv(&self) -> Option<Snapshot> {
++    pub fn try_recv(&self) -> Option<(Snapshot, Option<String>)> {
+         self.rx.try_recv().ok()
+     }
+ 
+diff --git a/src/mifi_ui.rs b/src/mifi_ui.rs
+index 9a4780d..02e17d7 100644
+--- a/src/mifi_ui.rs
++++ b/src/mifi_ui.rs
+@@ -45,7 +45,8 @@ impl State {
+     }
+ 
+     /// 每帧调用：配置变了就重建线程，收到了就更新快照。
+-    pub fn pump(&mut self, settings: &Settings, env: &Env) {
++    /// 每帧调用；返回本次新产生的提醒文本（供岛内弹提示），没有则为 None。
++    pub fn pump(&mut self, settings: &Settings, env: &Env) -> Option<String> {
+         let config = Self::config(settings);
+         self.enabled = config.enabled;
+         if !config.enabled {
+@@ -54,7 +55,7 @@ impl State {
+                 self.last_clock = None;
+                 self.signature.clear();
+             }
+-            return;
++            return None;
+         }
+ 
+         let signature = format!(
+@@ -68,12 +69,17 @@ impl State {
+             self.last_clock = None;
+         }
+ 
+-        while let Some(snapshot) = self.worker.as_ref().and_then(mifi::Worker::try_recv) {
++        let mut notice = None;
++        while let Some((snapshot, text)) = self.worker.as_ref().and_then(mifi::Worker::try_recv) {
+             if snapshot.online {
+                 self.last_clock = Some(env.clock.chars().take(5).collect());
+             }
+             self.snapshot = snapshot;
++            if text.is_some() {
++                notice = text;
++            }
+         }
++        notice
+     }
+ 
+     pub fn refresh(&self) {
+-- 
+2.55.0.windows.5
+

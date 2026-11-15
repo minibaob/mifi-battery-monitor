@@ -1,0 +1,1426 @@
+From 6a38d8a89482e201ae4b7bd8d3731184e7e33d27 Mon Sep 17 00:00:00 2001
+From: mifi-dev <dev@local>
+Date: Sun, 15 Nov 2026 11:31:42 +0800
+Subject: [PATCH 5/6] =?UTF-8?q?fix(mifi):=20=E6=9C=AA=E5=90=AF=E7=94=A8?=
+ =?UTF-8?q?=E6=97=B6=E6=98=BE=E7=A4=BA=E3=80=8C=E6=9C=AA=E5=90=AF=E7=94=A8?=
+ =?UTF-8?q?=E3=80=8D=E8=80=8C=E9=9D=9E=E3=80=8C=E7=A6=BB=E7=BA=BF=E3=80=8D?=
+ =?UTF-8?q?=EF=BC=8C=E9=81=BF=E5=85=8D=E8=AF=AF=E5=88=A4=E8=AE=BE=E5=A4=87?=
+ =?UTF-8?q?=E6=8E=89=E7=BA=BF?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ patches/0001-feat-mifi-WiFi.patch         | 1064 +++++++++++++++++++++
+ patches/0002-fix-mifi-10-page_order.patch |  125 +++
+ patches/0003-test-9-10-page_order.patch   |   73 ++
+ patches/0004-docs-MSVC-gnu.patch          |   53 +
+ src/mifi_ui.rs                            |   15 +-
+ 5 files changed, 1327 insertions(+), 3 deletions(-)
+ create mode 100644 patches/0001-feat-mifi-WiFi.patch
+ create mode 100644 patches/0002-fix-mifi-10-page_order.patch
+ create mode 100644 patches/0003-test-9-10-page_order.patch
+ create mode 100644 patches/0004-docs-MSVC-gnu.patch
+
+diff --git a/patches/0001-feat-mifi-WiFi.patch b/patches/0001-feat-mifi-WiFi.patch
+new file mode 100644
+index 0000000..26a1a0b
+--- /dev/null
++++ b/patches/0001-feat-mifi-WiFi.patch
+@@ -0,0 +1,1064 @@
++From 8e98904302eaa331d401ca43085610189a0ac015 Mon Sep 17 00:00:00 2001
++From: mifi-dev <dev@local>
++Date: Sat, 14 Nov 2026 22:22:12 +0800
++Subject: [PATCH 1/4] =?UTF-8?q?feat(mifi):=20=E9=9A=8F=E8=BA=AB=20WiFi=20?=
++ =?UTF-8?q?=E7=94=B5=E9=87=8F=E9=A1=B5=E3=80=81=E6=8F=90=E9=86=92=E7=8A=B6?=
++ =?UTF-8?q?=E6=80=81=E6=9C=BA=E4=B8=8E=E8=AE=BE=E7=BD=AE=E9=A1=B9?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++---
++ docs/mifi-battery.md |  72 ++++++++
++ src/app.rs           |  11 +-
++ src/extras.rs        |   7 +-
++ src/lib.rs           |   2 +
++ src/mifi.rs          | 432 +++++++++++++++++++++++++++++++++++++++++++
++ src/mifi_ui.rs       | 248 +++++++++++++++++++++++++
++ src/model.rs         |  44 ++++-
++ src/ui_tests.rs      |  22 +--
++ 8 files changed, 811 insertions(+), 27 deletions(-)
++ create mode 100644 docs/mifi-battery.md
++ create mode 100644 src/mifi.rs
++ create mode 100644 src/mifi_ui.rs
++
++diff --git a/docs/mifi-battery.md b/docs/mifi-battery.md
++new file mode 100644
++index 0000000..c1360b1
++--- /dev/null
+++++ b/docs/mifi-battery.md
++@@ -0,0 +1,72 @@
+++# 随身 WiFi 电量（波导 M03X / ASR1803）
+++
+++岛仔内置的「随身 WiFi」页：读取波导 M03X 的局域网 Web 接口，显示电量百分比、进度条、
+++在线/离线、充电状态与更新时间，低电量时经 PushPlus 推送微信。
+++
+++与本机电量（常驻条的电量槽、`main.rs::read_power`）完全独立，互不影响。
+++
+++## 数据来源
+++
+++实测自 M03X（固件 `1.057.064` / `LB12AKAS00160_N12_BD_M1261T_V009`，硬件 `LB12A_N12`）：
+++
+++```
+++GET http://192.168.1.1/xml_action.cgi?method=get&module=duster&file=json_status_info
+++```
+++
+++- 无需认证（响应头 `Access-Control-Allow-Origin: *`），`method=get&module=duster` 是固件自带的 duster 框架
+++- 返回 22 个字段，全部是**字符串**
+++- 电池相关只有 4 个：`battery_percent`(0-100)、`battery_charge`(0 未充 / 1 充电中 / 2、3 已充满)、
+++  `battery_charging`、`battery_connect`(1 在位)
+++- **没有电压字段**：AT 层 28 条候选指令与 Web 层 16 个接口均已穷举确认，固件不对外暴露 mV/ADC
+++
+++## 三条例外处理
+++
+++1. **断网不等于 0%**：采样失败时沿用上一次有效电量与更新时间，只把 `online` 置 false，界面显示「离线」。
+++   `Snapshot.pct` 是 `Option<u8>`，失败时为 `None`，代码里没有任何 `unwrap_or(0)`。
+++2. **电池不在位时的 0% 判为无效**：`battery_percent=0` 且 `battery_connect=0` 直接当错误，不显示 0%。
+++3. **非 JSON / 超范围**：解析失败按离线处理，不影响已有状态。
+++
+++## 提醒状态机
+++
+++| 条件 | 行为 |
+++|---|---|
+++| > 低阈值（默认 20%） | 正常，绿色 |
+++| 11%–20% | 低电量，黄色，等级上升时推送 |
+++| ≤ 紧急阈值（默认 10%） | 紧急，红色，等级上升时推送 |
+++| 15% 直接掉到 8% | 只发紧急，不补发普通 |
+++| 充电 / 已充满 | 暂停提醒并把等级复位为正常 |
+++| 离网 | 状态冻结，不推送 |
+++| 同级重复 | 默认 30 分钟内不再推送 |
+++
+++## 改动清单
+++
+++新增：
+++
+++- `src/mifi.rs` — 配置、快照、状态机、HTTP 采样、PushPlus 推送、后台线程；含 7 个单测
+++- `src/mifi_ui.rs` — 页面渲染、设置表单、每帧泵
+++
+++修改：
+++
+++- `src/lib.rs` — 注册两个模块
+++- `src/app.rs` — `PAGE_NAMES` 9→10、`PAGE_SETTINGS_TABS`、`dots` 尺寸、`App.mifi` 字段、`render_page` 分支、每帧 `pump`
+++- `src/model.rs` — `visible_pages`/`page_order` 改为 10 项、`mifi_*` 七个配置项的默认值/解析/序列化、
+++  `page_order` 解析改为「缺页补到末尾」，兼容旧的 8/9 项配置
+++- `src/extras.rs` — 设置窗口新增「随身 WiFi」tab（索引 13）
+++
+++未改动：`main.rs::read_power`、`bar_layout.rs` 的常驻条槽位、任何本机电量逻辑。
+++
+++## 配置项
+++
+++写在 `%APPDATA%\Daozai\settings.txt`：
+++
+++```
+++mifi_enabled=1
+++mifi_host=192.168.1.1
+++mifi_path=/xml_action.cgi?method=get&module=duster&file=json_status_info
+++mifi_token=            # PushPlus Token，留空则只在岛内变色
+++mifi_low=20
+++mifi_critical=10
+++mifi_cooldown=30
+++```
+++
+++默认 `mifi_enabled=0`，需要在设置里手动开启，避免未使用该设备的用户产生无效网络请求。
++diff --git a/src/app.rs b/src/app.rs
++index 3a65276..5a164c5 100644
++--- a/src/app.rs
+++++ b/src/app.rs
++@@ -64,8 +64,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
++         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
++     }
++ }
++-pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气"];
++-pub(crate) const PAGE_SETTINGS_TABS: [usize; 9] = [1,2,3,5,4,7,11,8,12];
+++pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "随身 WiFi"];
+++pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,13];
++ 
++ // ---------- 动效参数 ----------
++ /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
++@@ -655,7 +655,7 @@ pub struct App {
++     page_dir: f32,
++     page_t0: f64,
++     slide: Spring,
++-    dots: [Spring; 9],
+++    dots: [Spring; 10],
++     wheel_delta: f32,
++     wheel_at: f64,
++     wheel_page_at: f64,
++@@ -796,6 +796,8 @@ pub struct App {
++     pub(crate) updates: crate::updates::State,
++     pub(crate) resident: bar::Motion,
++     pub(crate) resident_power: (Option<u8>,bool),
+++    /// 波导 M03X 随身 WiFi 电量（与本机电量完全独立）。
+++    pub(crate) mifi: crate::mifi_ui::State,
++ }
++ 
++ impl App {
++@@ -916,6 +918,7 @@ impl App {
++             weather,
++             updates: Default::default(),
++             resident: Default::default(), resident_power:(None,false),
+++            mifi: crate::mifi_ui::State::new(),
++         }
++     }
++ 
++@@ -1721,6 +1724,7 @@ impl App {
++         self.update_media(env,&ctx);
++         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
++         self.resident_power=(env.battery,env.charging);
+++        self.mifi.pump(&self.settings, env);
++         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
++         layout.reorder(&self.settings.resident_order);
++         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
++@@ -2856,6 +2860,7 @@ impl App {
++             5 => self.page_mail(c, env, cmds),
++             6 => self.page_quota(c),
++             8 => self.page_weather(c,env,cmds),
+++            9 => self.page_mifi(c,env,cmds),
++             CALENDAR_PAGE => self.page_calendar(c,env),
++             _ => self.page_settings(c),
++         }
++diff --git a/src/extras.rs b/src/extras.rs
++index 7d98b75..c431c06 100644
++--- a/src/extras.rs
+++++ b/src/extras.rs
++@@ -1088,7 +1088,7 @@ pub(crate) fn settings_card(ui:&mut egui::Ui,add:impl FnOnce(&mut egui::Ui)) {
++ /// 设置分页对应的功能模块（页面序号）；常规、通知、关于、页面管理不属于任何模块。
++ pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
++     use crate::app::*;
++-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),_=>None}
+++    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),13=>Some(9),_=>None}
++ }
++ 
++ pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
++@@ -1299,8 +1299,8 @@ impl App {
++                     }
++                 }
++                 ui.visuals_mut().selection.bg_fill=settings_color(ctx,Color32::from_rgb(45,105,165),Color32::from_rgb(209,226,248));
++-                let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气"];
++-                ui.label(egui::RichText::new(titles[self.settings_tab.min(12)]).size(18.0).strong().color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
+++                let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气","随身 WiFi"];
+++                ui.label(egui::RichText::new(titles[self.settings_tab.min(13)]).size(18.0).strong().color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
++                 if let Some((_,start,end))=SETTINGS_GROUPS.iter().find(|(_,start,end)|(*start..=*end).contains(&self.settings_tab)) {
++                     if start!=end {
++                         ui.add_space(7.0);
++@@ -1337,6 +1337,7 @@ impl App {
++                     }
++                     match self.settings_tab {
++                     12=>self.weather_settings(ui),
+++                    13=>self.mifi_settings(ui),
++                     11=>self.quota_settings(ui),
++                     10=>{
++                         ui.label(egui::RichText::new("选择需要的页面和状态组件。").size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
++diff --git a/src/lib.rs b/src/lib.rs
++index d0acd59..d70c613 100644
++--- a/src/lib.rs
+++++ b/src/lib.rs
++@@ -37,6 +37,8 @@ pub mod renderer;
++ pub mod otp;
++ pub mod quota;
++ mod quota_ui;
+++pub mod mifi;
+++mod mifi_ui;
++ pub mod weather;
++ mod weather_ui;
++ mod pages;
++diff --git a/src/mifi.rs b/src/mifi.rs
++new file mode 100644
++index 0000000..13b1db9
++--- /dev/null
+++++ b/src/mifi.rs
++@@ -0,0 +1,432 @@
+++//! 波导 M03X（ASR1803）随身 WiFi 电量监控。
+++//!
+++//! 数据源是设备局域网 Web 接口 `json_status_info`：只读、无需认证、返回 22 个字符串字段。
+++//! 该固件**不提供**电池电压，只有 `battery_percent`(0-100) 与三个状态位，所以阈值判断
+++//! 一律基于百分比。
+++//!
+++//! 三条铁律：
+++//! 1. 采样失败绝不把电量当成 0：保留上一次有效快照，只把 `online` 置 false。
+++//! 2. 提醒只在等级上升时触发，同级冷却；15% 直接掉到 8% 只发紧急，不补发普通。
+++//! 3. 充电（含已充满）时暂停提醒并复位等级。
+++
+++use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+++use std::thread;
+++use std::time::Duration;
+++
+++pub const DEFAULT_HOST: &str = "192.168.1.1";
+++pub const DEFAULT_PATH: &str = "/xml_action.cgi?method=get&module=duster&file=json_status_info";
+++pub const PUSHPLUS_URL: &str = "https://www.pushplus.plus/send";
+++
+++#[derive(Clone, Debug, PartialEq)]
+++pub struct Config {
+++    pub enabled: bool,
+++    pub host: String,
+++    pub path: String,
+++    pub token: String,
+++    pub low: u8,
+++    pub critical: u8,
+++    pub cooldown_minutes: u32,
+++    pub interval_seconds: u64,
+++}
+++
+++impl Default for Config {
+++    fn default() -> Self {
+++        Self {
+++            enabled: false,
+++            host: DEFAULT_HOST.to_string(),
+++            path: DEFAULT_PATH.to_string(),
+++            token: String::new(),
+++            low: 20,
+++            critical: 10,
+++            cooldown_minutes: 30,
+++            interval_seconds: 60,
+++        }
+++    }
+++}
+++
+++/// 一次采样的结果。`pct` 为 `None` 表示从未取到过有效值——界面必须显示"离线/—"，
+++/// 不能退化成 0%。
+++#[derive(Clone, Debug, Default, PartialEq)]
+++pub struct Snapshot {
+++    pub online: bool,
+++    pub pct: Option<u8>,
+++    pub charging: bool,
+++    pub charge_text: &'static str,
+++    pub present: bool,
+++    pub rssi: Option<i32>,
+++    pub signal: Option<u8>,
+++    /// 最后一次**成功**采样的本地秒数；失败时保持不变。
+++    pub updated: Option<f64>,
+++    pub error: String,
+++}
+++
+++impl Snapshot {
+++    pub fn level(&self, cfg: &Config) -> Option<Level> {
+++        if !self.online {
+++            return None;
+++        }
+++        let pct = self.pct?;
+++        if self.charging {
+++            return Some(Level::Ok);
+++        }
+++        Some(if pct <= cfg.critical {
+++            Level::Critical
+++        } else if pct <= cfg.low {
+++            Level::Low
+++        } else {
+++            Level::Ok
+++        })
+++    }
+++}
+++
+++#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+++pub enum Level {
+++    Ok = 0,
+++    Low = 1,
+++    Critical = 2,
+++}
+++
+++#[derive(Clone, Debug, PartialEq)]
+++pub struct Message {
+++    pub level: Level,
+++    pub title: String,
+++    pub content: String,
+++}
+++
+++/// 提醒状态机。时间由调用方传入（秒），方便单测。
+++#[derive(Debug, Default)]
+++pub struct Alerts {
+++    level: Level,
+++    last_low: Option<f64>,
+++    last_critical: Option<f64>,
+++}
+++
+++impl Default for Level {
+++    fn default() -> Self {
+++        Level::Ok
+++    }
+++}
+++
+++impl Alerts {
+++    pub fn new() -> Self {
+++        Self::default()
+++    }
+++
+++    pub fn level(&self) -> Level {
+++        self.level
+++    }
+++
+++    pub fn evaluate(&mut self, snap: &Snapshot, cfg: &Config, now: f64) -> Option<Message> {
+++        let target = snap.level(cfg)?;
+++        let cooldown = cfg.cooldown_minutes.max(1) as f64 * 60.0;
+++
+++        if target < self.level {
+++            self.level = target;
+++            return None;
+++        }
+++        if target == self.level {
+++            if target == Level::Ok {
+++                return None;
+++            }
+++            let last = match target {
+++                Level::Critical => self.last_critical,
+++                _ => self.last_low,
+++            };
+++            if last.is_some_and(|at| now - at < cooldown) {
+++                return None;
+++            }
+++        }
+++        self.level = target;
+++
+++        let pct = snap.pct?;
+++        let state = snap.charge_text;
+++        let (title, content) = match target {
+++            Level::Critical => (
+++                format!("【紧急】随身 WiFi 电量仅剩 {pct}%"),
+++                format!(
+++                    "设备 {} 电量 {pct}%，{state}，随时可能断电，请立即充电。",
+++                    cfg.host
+++                ),
+++            ),
+++            Level::Low => (
+++                format!("随身 WiFi 电量偏低 {pct}%"),
+++                format!(
+++                    "设备 {} 电量 {pct}%，{state}。降到 {}% 会再次提醒。",
+++                    cfg.host, cfg.critical
+++                ),
+++            ),
+++            Level::Ok => return None,
+++        };
+++        match target {
+++            Level::Critical => self.last_critical = Some(now),
+++            Level::Low => self.last_low = Some(now),
+++            Level::Ok => {}
+++        }
+++        Some(Message {
+++            level: target,
+++            title,
+++            content,
+++        })
+++    }
+++
+++    /// 用户关掉再打开、或改了地址时复位，避免带着旧等级继续冷却。
+++    pub fn reset(&mut self) {
+++        *self = Self::default();
+++    }
+++}
+++
+++fn field(value: &serde_json::Value, key: &str) -> String {
+++    match value.get(key) {
+++        Some(serde_json::Value::String(text)) => text.trim().to_string(),
+++        Some(serde_json::Value::Number(number)) => number.to_string(),
+++        _ => String::new(),
+++    }
+++}
+++
+++fn parse_number(value: &serde_json::Value, key: &str) -> Option<i64> {
+++    field(value, key).parse::<i64>().ok()
+++}
+++
+++/// 解析接口返回。所有字段在固件里都是字符串，这里同时容忍数字类型。
+++pub fn parse(body: &str, now: f64) -> Result<Snapshot, String> {
+++    let value: serde_json::Value =
+++        serde_json::from_str(body).map_err(|err| format!("返回内容不是合法 JSON: {err}"))?;
+++
+++    let raw = field(&value, "battery_percent");
+++    let pct = raw
+++        .parse::<i64>()
+++        .map_err(|_| format!("电量字段异常: {raw:?}"))?;
+++    if !(0..=100).contains(&pct) {
+++        return Err(format!("电量超出范围: {pct}"));
+++    }
+++
+++    let charge = field(&value, "battery_charge");
+++    let present = field(&value, "battery_connect") == "1";
+++    if pct == 0 && !present {
+++        return Err("电量为 0 且电池不在位，判为无效读数".to_string());
+++    }
+++
+++    let charge_text = match charge.as_str() {
+++        "1" => "充电中",
+++        "2" | "3" => "已充满",
+++        "0" => "未充电",
+++        _ => "未知",
+++    };
+++
+++    Ok(Snapshot {
+++        online: true,
+++        pct: Some(pct as u8),
+++        charging: matches!(charge.as_str(), "1" | "2" | "3")
+++            || field(&value, "battery_charging") == "1",
+++        charge_text,
+++        present,
+++        rssi: parse_number(&value, "rssi").map(|v| v as i32),
+++        signal: parse_number(&value, "signal_quality").map(|v| v.clamp(0, 5) as u8),
+++        updated: Some(now),
+++        error: String::new(),
+++    })
+++}
+++
+++fn agent() -> ureq::Agent {
+++    ureq::AgentBuilder::new()
+++        .timeout_connect(Duration::from_secs(4))
+++        .timeout(Duration::from_secs(8))
+++        .redirects(0)
+++        .build()
+++}
+++
+++pub fn url(cfg: &Config) -> String {
+++    let path = if cfg.path.is_empty() { DEFAULT_PATH } else { cfg.path.as_str() };
+++    format!("http://{}{}", cfg.host.trim().trim_end_matches('/'), path)
+++}
+++
+++/// 采一次样。失败时沿用 `previous` 的有效电量，仅标 `online=false`。
+++pub fn sample(agent: &ureq::Agent, cfg: &Config, now: f64, previous: &Snapshot) -> Snapshot {
+++    let response = agent.get(&url(cfg)).call();
+++    match response {
+++        Ok(resp) => {
+++            let body = resp.into_string().unwrap_or_default();
+++            match parse(&body, now) {
+++                Ok(snapshot) => snapshot,
+++                Err(error) => offline(previous, error),
+++            }
+++        }
+++        Err(ureq::Error::Status(code, _)) => offline(previous, format!("HTTP {code}")),
+++        Err(err) => offline(previous, format!("设备不可达: {err}")),
+++    }
+++}
+++
+++fn offline(previous: &Snapshot, error: String) -> Snapshot {
+++    Snapshot {
+++        online: false,
+++        error,
+++        // 关键：电量与更新时间全部沿用上次有效值，绝不置 0
+++        ..previous.clone()
+++    }
+++}
+++
+++pub fn push(token: &str, title: &str, content: &str) -> bool {
+++    if token.trim().is_empty() {
+++        return false;
+++    }
+++    let payload = serde_json::json!({
+++        "token": token.trim(),
+++        "title": title,
+++        "content": content,
+++        "template": "txt",
+++    })
+++    .to_string();
+++    let result = ureq::AgentBuilder::new()
+++        .timeout(Duration::from_secs(10))
+++        .build()
+++        .post(PUSHPLUS_URL)
+++        .set("Content-Type", "application/json")
+++        .send_string(&payload);
+++    matches!(result, Ok(resp) if (200..300).contains(&resp.status()))
+++}
+++
+++/// 后台轮询线程。配置变更时由上层丢弃旧 worker 再 `start` 一个新的。
+++pub struct Worker {
+++    rx: Receiver<Snapshot>,
+++    wake: Sender<()>,
+++}
+++
+++impl Worker {
+++    pub fn start(cfg: Config) -> Self {
+++        let (tx, rx) = mpsc::channel();
+++        let (wake, wake_rx) = mpsc::channel::<()>();
+++        thread::spawn(move || {
+++            let agent = agent();
+++            let mut alerts = Alerts::new();
+++            let mut previous = Snapshot::default();
+++            let started = std::time::Instant::now();
+++            loop {
+++                let now = started.elapsed().as_secs_f64();
+++                let snapshot = sample(&agent, &cfg, now, &previous);
+++                if snapshot.online {
+++                    previous = snapshot.clone();
+++                }
+++                if let Some(message) = alerts.evaluate(&snapshot, &cfg, now) {
+++                    push(&cfg.token, &message.title, &message.content);
+++                }
+++                if tx.send(snapshot).is_err() {
+++                    break;
+++                }
+++                match wake_rx.recv_timeout(Duration::from_secs(cfg.interval_seconds.max(10))) {
+++                    Ok(()) | Err(RecvTimeoutError::Timeout) => {}
+++                    Err(RecvTimeoutError::Disconnected) => break,
+++                }
+++            }
+++        });
+++        Self { rx, wake }
+++    }
+++
+++    pub fn try_recv(&self) -> Option<Snapshot> {
+++        self.rx.try_recv().ok()
+++    }
+++
+++    pub fn refresh(&self) {
+++        let _ = self.wake.send(());
+++    }
+++}
+++
+++#[cfg(test)]
+++mod tests {
+++    use super::*;
+++
+++    fn cfg() -> Config {
+++        Config::default()
+++    }
+++
+++    fn snap(pct: u8, charge: &str, present: bool) -> Snapshot {
+++        Snapshot {
+++            online: true,
+++            pct: Some(pct),
+++            charging: matches!(charge, "1" | "2" | "3"),
+++            charge_text: match charge {
+++                "1" => "充电中",
+++                "2" | "3" => "已充满",
+++                "0" => "未充电",
+++                _ => "未知",
+++            },
+++            present,
+++            rssi: Some(-82),
+++            signal: Some(5),
+++            updated: Some(1.0),
+++            error: String::new(),
+++        }
+++    }
+++
+++    #[test]
+++    fn parses_real_payload() {
+++        let body = r#"{"battery_percent":"100","battery_charge":"1","battery_charging":"1",
+++                       "battery_connect":"1","rssi":"-82","signal_quality":"5"}"#;
+++        let got = parse(body, 12.0).expect("应解析成功");
+++        assert_eq!(got.pct, Some(100));
+++        assert!(got.charging);
+++        assert!(got.present);
+++        assert_eq!(got.rssi, Some(-82));
+++        assert_eq!(got.signal, Some(5));
+++        assert_eq!(got.updated, Some(12.0));
+++    }
+++
+++    #[test]
+++    fn rejects_bad_payloads() {
+++        assert!(parse("not json", 0.0).is_err());
+++        assert!(parse(r#"{"battery_percent":"abc"}"#, 0.0).is_err());
+++        assert!(parse(r#"{"battery_percent":"150"}"#, 0.0).is_err());
+++        // 电池不在位时的 0% 是占位值，不能当真
+++        assert!(parse(r#"{"battery_percent":"0","battery_connect":"0"}"#, 0.0).is_err());
+++    }
+++
+++    #[test]
+++    fn offline_keeps_last_value() {
+++        let previous = snap(43, "0", true);
+++        let after = offline(&previous, "设备不可达".into());
+++        assert!(!after.online);
+++        assert_eq!(after.pct, Some(43), "断网不能把电量变成 0 或 None");
+++        assert_eq!(after.updated, previous.updated);
+++        assert_eq!(after.error, "设备不可达");
+++    }
+++
+++    #[test]
+++    fn low_then_critical_only_sends_escalation() {
+++        let mut alerts = Alerts::new();
+++        assert!(alerts.evaluate(&snap(15, "0", true), &cfg(), 0.0).is_some());
+++        let message = alerts
+++            .evaluate(&snap(8, "0", true), &cfg(), 1.0)
+++            .expect("跨级也要发紧急");
+++        assert_eq!(message.level, Level::Critical);
+++        assert!(message.title.contains("紧急"));
+++    }
+++
+++    #[test]
+++    fn same_level_respects_cooldown() {
+++        let mut alerts = Alerts::new();
+++        assert!(alerts.evaluate(&snap(18, "0", true), &cfg(), 0.0).is_some());
+++        assert!(alerts.evaluate(&snap(17, "0", true), &cfg(), 60.0).is_none());
+++        assert!(alerts.evaluate(&snap(16, "0", true), &cfg(), 1799.0).is_none());
+++        assert!(alerts.evaluate(&snap(15, "0", true), &cfg(), 1801.0).is_some());
+++    }
+++
+++    #[test]
+++    fn charging_pauses_and_resets() {
+++        let mut alerts = Alerts::new();
+++        assert!(alerts.evaluate(&snap(8, "0", true), &cfg(), 0.0).is_some());
+++        assert!(alerts.evaluate(&snap(9, "1", true), &cfg(), 10.0).is_none());
+++        assert_eq!(alerts.level(), Level::Ok);
+++        // 拔电后重新开始监控
+++        assert!(alerts.evaluate(&snap(19, "0", true), &cfg(), 20.0).is_some());
+++    }
+++
+++    #[test]
+++    fn offline_freezes_level() {
+++        let mut alerts = Alerts::new();
+++        alerts.evaluate(&snap(18, "0", true), &cfg(), 0.0);
+++        let before = alerts.level();
+++        let mut dead = snap(18, "0", true);
+++        dead.online = false;
+++        assert!(alerts.evaluate(&dead, &cfg(), 5000.0).is_none());
+++        assert_eq!(alerts.level(), before);
+++    }
+++}
++diff --git a/src/mifi_ui.rs b/src/mifi_ui.rs
++new file mode 100644
++index 0000000..cd4c9c4
++--- /dev/null
+++++ b/src/mifi_ui.rs
++@@ -0,0 +1,248 @@
+++//! 随身 WiFi 电量页与设置表单。
+++//!
+++//! 只负责「显示」和「把配置喂给后台线程」，判定逻辑全部在 `crate::mifi`。
+++//! 与本机电量（`resident_power` / `read_power()`）互不影响。
+++
+++use crate::app::{App, Cmd, Env};
+++use crate::mifi::{self, Level, Snapshot};
+++use crate::model::Settings;
+++use crate::paint::{Card, H};
+++use crate::theme::{self, size, W};
+++use eframe::egui::{self, Color32};
+++
+++pub(crate) struct State {
+++    worker: Option<mifi::Worker>,
+++    pub(crate) snapshot: Snapshot,
+++    /// 最后一次成功采样的 `HH:MM`，来自 `Env::clock`；断网后保持不变。
+++    pub(crate) last_clock: Option<String>,
+++    signature: String,
+++}
+++
+++impl State {
+++    pub fn new() -> Self {
+++        Self {
+++            worker: None,
+++            snapshot: Snapshot::default(),
+++            last_clock: None,
+++            signature: String::new(),
+++        }
+++    }
+++
+++    pub fn config(settings: &Settings) -> mifi::Config {
+++        mifi::Config {
+++            enabled: settings.mifi_enabled,
+++            host: settings.mifi_host.clone(),
+++            path: settings.mifi_path.clone(),
+++            token: settings.mifi_token.clone(),
+++            low: settings.mifi_low.clamp(1, 100),
+++            critical: settings.mifi_critical.clamp(1, 100).min(settings.mifi_low),
+++            cooldown_minutes: settings.mifi_cooldown_minutes.max(1),
+++            interval_seconds: 60,
+++        }
+++    }
+++
+++    /// 每帧调用：配置变了就重建线程，收到了就更新快照。
+++    pub fn pump(&mut self, settings: &Settings, env: &Env) {
+++        let config = Self::config(settings);
+++        if !config.enabled {
+++            if self.worker.take().is_some() {
+++                self.snapshot = Snapshot::default();
+++                self.last_clock = None;
+++                self.signature.clear();
+++            }
+++            return;
+++        }
+++
+++        let signature = format!(
+++            "{}|{}|{}|{}|{}|{}",
+++            config.host, config.path, config.token, config.low, config.critical, config.cooldown_minutes
+++        );
+++        if self.worker.is_none() || signature != self.signature {
+++            self.worker = Some(mifi::Worker::start(config));
+++            self.signature = signature;
+++            self.snapshot = Snapshot::default();
+++            self.last_clock = None;
+++        }
+++
+++        while let Some(snapshot) = self.worker.as_ref().and_then(mifi::Worker::try_recv) {
+++            if snapshot.online {
+++                self.last_clock = Some(env.clock.chars().take(5).collect());
+++            }
+++            self.snapshot = snapshot;
+++        }
+++    }
+++
+++    pub fn refresh(&self) {
+++        if let Some(worker) = &self.worker {
+++            worker.refresh();
+++        }
+++    }
+++
+++    pub fn level_color(&self, cfg: &mifi::Config) -> Color32 {
+++        if !self.snapshot.online {
+++            return theme::DIM;
+++        }
+++        match self.snapshot.level(cfg) {
+++            Some(Level::Critical) => theme::RED,
+++            Some(Level::Low) => theme::YELLOW,
+++            Some(Level::Ok) => theme::GREEN,
+++            None => theme::DIM,
+++        }
+++    }
+++}
+++
+++impl App {
+++    /// 页面主体：大号百分比 + 进度条 + 在线/充电状态 + 更新时间。
+++    pub(crate) fn page_mifi(&mut self, c: &Card, _env: &Env, _cmds: &mut Vec<Cmd>) {
+++        let snapshot = self.mifi.snapshot.clone();
+++        let cfg = State::config(&self.settings);
+++        let ink = self.mifi.level_color(&cfg);
+++
+++        c.text(42.0, 50.0, "随身 WiFi · 波导 M03X", size::TINY, W::Regular, theme::GRAY, H::Left);
+++
+++        let big = match snapshot.pct {
+++            Some(pct) => format!("{pct}%"),
+++            None => "—".to_string(),
+++        };
+++        c.text(42.0, 80.0, &big, size::HERO, W::Bold, ink, H::Left);
+++
+++        c.fill(42.0, 92.0, 210.0, 6.0, 3.0, theme::TRACK);
+++        if snapshot.online {
+++            if let Some(pct) = snapshot.pct {
+++                let width = (210.0 * pct as f32 / 100.0).max(2.0);
+++                c.fill(42.0, 92.0, width, 6.0, 3.0, ink);
+++            }
+++        }
+++
+++        let (status, status_ink) = if !snapshot.online {
+++            ("离线", theme::DIM)
+++        } else if snapshot.charging {
+++            (snapshot.charge_text, theme::CHARGE)
+++        } else {
+++            (snapshot.charge_text, theme::WHITE)
+++        };
+++        c.circle(276.0, 58.0, 4.0, ink);
+++        c.text(286.0, 62.0, status, size::BODY, W::Regular, status_ink, H::Left);
+++
+++        if snapshot.online {
+++            let signal = snapshot.signal.unwrap_or(0);
+++            c.text(370.0, 62.0, &format!("信号 {signal}/5"), size::TINY, W::Regular, theme::GRAY, H::Right);
+++        }
+++
+++        let stamp = self.mifi.last_clock.clone().unwrap_or_else(|| "--:--".to_string());
+++        let detail = if snapshot.online {
+++            format!("{stamp} 更新")
+++        } else {
+++            format!("离线 · 最后有效 {stamp}")
+++        };
+++        c.text(42.0, 118.0, &detail, size::TINY, W::Regular, theme::GRAY, H::Left);
+++
+++        if !snapshot.online {
+++            c.text(370.0, 118.0, "点击重试", size::TINY, W::Regular, theme::BLUE, H::Right);
+++        }
+++
+++        let hit = c.hit(34.0, 36.0, 336.0, 92.0, "mifi-refresh");
+++        if hit.clicked() {
+++            self.mifi.refresh();
+++        }
+++    }
+++
+++    /// 设置窗口里的表单。
+++    pub(crate) fn mifi_settings(&mut self, ui: &mut egui::Ui) {
+++        use crate::extras::{settings_card, settings_hint, settings_label};
+++        use crate::settings_theme::color;
+++
+++        let ctx = ui.ctx().clone();
+++        let before = self.mifi_form_fingerprint();
+++
+++        ui.add_space(4.0);
+++        settings_card(ui, |ui| {
+++            let snapshot = self.mifi.snapshot.clone();
+++            let cfg = State::config(&self.settings);
+++            let ink = self.mifi.level_color(&cfg);
+++            ui.horizontal(|ui| {
+++                let text = match snapshot.pct {
+++                    Some(pct) => format!("{pct}%"),
+++                    None => "—".to_string(),
+++                };
+++                ui.label(egui::RichText::new(text).size(22.0).strong().color(ink));
+++                ui.label(egui::RichText::new(if snapshot.online { snapshot.charge_text } else { "离线" })
+++                    .size(12.0)
+++                    .color(color(&ctx, Color32::from_gray(150), Color32::from_gray(90))));
+++                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+++                    if ui.button("立即刷新").clicked() {
+++                        self.mifi.refresh();
+++                    }
+++                });
+++            });
+++            if !snapshot.online && !snapshot.error.is_empty() {
+++                settings_hint(ui, &format!("上次错误：{}", snapshot.error));
+++            }
+++        });
+++
+++        settings_label(ui, "设备");
+++        settings_card(ui, |ui| {
+++            ui.spacing_mut().item_spacing.y = 6.0;
+++            ui.horizontal(|ui| {
+++                ui.label(egui::RichText::new("管理地址").size(12.0));
+++                ui.add(egui::TextEdit::singleline(&mut self.settings.mifi_host)
+++                    .desired_width(150.0)
+++                    .hint_text("192.168.1.1"));
+++            });
+++            ui.horizontal(|ui| {
+++                ui.label(egui::RichText::new("接口路径").size(12.0));
+++                ui.add(egui::TextEdit::singleline(&mut self.settings.mifi_path)
+++                    .desired_width(ui.available_width() - 12.0));
+++            });
+++            settings_hint(ui, "设备连上电脑或同一局域网后读取；路径默认是 duster 的 json_status_info，一般不用改。");
+++        });
+++
+++        settings_label(ui, "提醒");
+++        settings_card(ui, |ui| {
+++            ui.spacing_mut().item_spacing.y = 6.0;
+++            ui.horizontal(|ui| {
+++                ui.label(egui::RichText::new("低电量提醒").size(12.0));
+++                ui.add(egui::DragValue::new(&mut self.settings.mifi_low).range(1..=100).suffix(" %"));
+++                ui.label(egui::RichText::new("紧急提醒").size(12.0));
+++                ui.add(egui::DragValue::new(&mut self.settings.mifi_critical).range(1..=100).suffix(" %"));
+++            });
+++            ui.horizontal(|ui| {
+++                ui.label(egui::RichText::new("同级冷却").size(12.0));
+++                ui.add(egui::DragValue::new(&mut self.settings.mifi_cooldown_minutes)
+++                    .range(1..=1440)
+++                    .suffix(" 分钟"));
+++            });
+++            ui.horizontal(|ui| {
+++                ui.label(egui::RichText::new("PushPlus Token").size(12.0));
+++                ui.add(egui::TextEdit::singleline(&mut self.settings.mifi_token)
+++                    .desired_width(200.0)
+++                    .password(true)
+++                    .hint_text("留空则只在岛内变色"));
+++            });
+++            settings_hint(ui, "充电时暂停提醒；15% 直接掉到 8% 只会发一条紧急提醒。");
+++        });
+++
+++        ui.add_space(6.0);
+++        let mut on = self.settings.mifi_enabled;
+++        if ui.checkbox(&mut on, "启用随身 WiFi 监控（关闭后不轮询、不提醒）").changed() {
+++            self.settings.mifi_enabled = on;
+++        }
+++
+++        if before != self.mifi_form_fingerprint() {
+++            self.settings.save();
+++        }
+++    }
+++
+++    fn mifi_form_fingerprint(&self) -> String {
+++        format!(
+++            "{}|{}|{}|{}|{}|{}|{}",
+++            self.settings.mifi_enabled,
+++            self.settings.mifi_host,
+++            self.settings.mifi_path,
+++            self.settings.mifi_token,
+++            self.settings.mifi_low,
+++            self.settings.mifi_critical,
+++            self.settings.mifi_cooldown_minutes
+++        )
+++    }
+++}
++diff --git a/src/model.rs b/src/model.rs
++index c208b91..0dc3391 100644
++--- a/src/model.rs
+++++ b/src/model.rs
++@@ -198,12 +198,20 @@ pub struct Settings {
++     pub browser_minimal: bool,
++     pub avoid_browsers: bool,
++     pub avoid_apps: Vec<(String,String)>,
++-    pub visible_pages: [bool; 9],
++-    pub page_order: [usize; 9],
+++    pub visible_pages: [bool; 10],
+++    pub page_order: [usize; 10],
++     pub show_battery: bool,
++     pub clock_12h: bool,
++     pub clock_period: u8,
++     pub resident_order: Vec<usize>,
+++    // 随身 WiFi（波导 M03X）：默认关闭，开启后才轮询
+++    pub mifi_enabled: bool,
+++    pub mifi_host: String,
+++    pub mifi_path: String,
+++    pub mifi_token: String,
+++    pub mifi_low: u8,
+++    pub mifi_critical: u8,
+++    pub mifi_cooldown_minutes: u32,
++     pub system_hud: bool,
++     pub bluetooth_notifications: bool,
++     pub read_notifications:bool,
++@@ -264,7 +272,7 @@ pub struct Settings {
++ 
++ impl Default for Settings {
++     fn default() -> Self {
++-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+++        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 10], page_order: [0,1,2,3,4,5,6,7,8,9], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new(), mifi_enabled: false, mifi_host: crate::mifi::DEFAULT_HOST.to_string(), mifi_path: crate::mifi::DEFAULT_PATH.to_string(), mifi_token: String::new(), mifi_low: 20, mifi_critical: 10, mifi_cooldown_minutes: 30 }
++     }
++ }
++ 
++@@ -318,20 +326,29 @@ impl Settings {
++                     if crate::bar_layout::valid_order(&order){s.resident_order=order;}
++                 }
++                 "page_order" => {
++-                    if let Ok(order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
++-                        if order.len()==9 && (0..9).all(|page|order.contains(&page)) {
+++                    if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
+++                        // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
+++                        let total=crate::app::PAGE_NAMES.len();
+++                        for page in 0..total {
+++                            if order.len()>=total {break;}
+++                            if !order.contains(&page) {order.push(page);}
+++                        }
+++                        if order.len()==total && (0..total).all(|page|order.contains(&page)) {
++                             s.page_order.copy_from_slice(&order);
++-                        } else if order.len()==8 && (0..8).all(|page|order.contains(&page)) {
++-                            // 旧配置里没有天气页：接在最后，其余顺序保持不变。
++-                            s.page_order[..8].copy_from_slice(&order);
++-                            s.page_order[8]=8;
++                         }
++                     }
++                 }
+++                "mifi_enabled" => s.mifi_enabled = v == "1",
+++                "mifi_host" => s.mifi_host = v.trim().to_string(),
+++                "mifi_path" => s.mifi_path = v.trim().to_string(),
+++                "mifi_token" => s.mifi_token = v.trim().to_string(),
+++                "mifi_low" => s.mifi_low = v.parse::<u8>().ok().filter(|v|(1..=100).contains(v)).unwrap_or(20),
+++                "mifi_critical" => s.mifi_critical = v.parse::<u8>().ok().filter(|v|(1..=100).contains(v)).unwrap_or(10),
+++                "mifi_cooldown" => s.mifi_cooldown_minutes = v.parse::<u32>().ok().filter(|v|*v>=1).unwrap_or(30),
++                 "clock_period" => s.clock_period = v.parse::<u8>().ok().filter(|v|*v<=2).unwrap_or(0),
++                 "clock_12h" => s.clock_12h = v == "1",
++                 "show_battery" => s.show_battery = v != "0",
++-                "visible_pages" if (6..=9).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
+++                "visible_pages" if (6..=10).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
++                     for (enabled,value) in s.visible_pages.iter_mut().zip(v.bytes()) { *enabled=value==b'1'; }
++                     for enabled in &mut s.visible_pages[v.len()..]{*enabled=v.bytes().any(|b|b==b'1');}
++                 }
++@@ -413,6 +430,13 @@ impl Settings {
++                 ("clock_period".into(), self.clock_period.to_string()),
++                 ("clock_12h".into(), (self.clock_12h as u8).to_string()),
++                 ("show_battery".into(), (self.show_battery as u8).to_string()),
+++                ("mifi_enabled".into(), (self.mifi_enabled as u8).to_string()),
+++                ("mifi_host".into(), self.mifi_host.clone()),
+++                ("mifi_path".into(), self.mifi_path.clone()),
+++                ("mifi_token".into(), self.mifi_token.clone()),
+++                ("mifi_low".into(), self.mifi_low.to_string()),
+++                ("mifi_critical".into(), self.mifi_critical.to_string()),
+++                ("mifi_cooldown".into(), self.mifi_cooldown_minutes.to_string()),
++                 ("read_notifications".into(),(self.read_notifications as u8).to_string()),
++                 ("wechat_notifications".into(),(self.wechat_notifications as u8).to_string()),
++                 ("wecom_notifications".into(),(self.wecom_notifications as u8).to_string()),
++diff --git a/src/ui_tests.rs b/src/ui_tests.rs
++index f11a78b..2063f14 100644
++--- a/src/ui_tests.rs
+++++ b/src/ui_tests.rs
++@@ -2271,7 +2271,7 @@ fn minimal_hover_does_not_catch_tabs_during_collapse() {
++ fn music_header_shortcut_returns_from_every_page_without_controlling_playback() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
++     for playing in [true,false] {
++-        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
+++        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
++         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"Track".into(),artist:"Artist".into(),playing,duration:120.0,..Default::default()};
++         for page in 1..crate::app::PAGE_NAMES.len() {
++             h.app.show_page(page);h.hover(H::local(300.0,60.0),0.8);h.cmds.clear();
++@@ -2932,7 +2932,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
++ fn page_visibility_is_saved_and_sets_the_starting_page() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
++     let mut h=H::new();
++-    assert_eq!(h.app.settings.visible_pages,[true;9]);
+++    assert_eq!(h.app.settings.visible_pages,[true;10]);
++     assert!(h.app.settings.show_battery);
++     h.app.settings.show_battery=false;
++     h.app.set_page_visible(0,false);
++@@ -2940,17 +2940,17 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
++     h.app.settings.save();
++     let settings=crate::model::Settings::load();
++     assert!(!settings.show_battery);
++-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true]);
+++    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true,true]);
++     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
++     assert_eq!(restarted.page(),1);
++     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
++     assert!(!restarted.settings.show_battery);
++     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
++-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false]);
+++    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false,false]);
++     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=1000000\n").unwrap();
++-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true],"旧版页面开关应保留，并开启新增的日程页与天气页");
+++    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true,true],"旧版页面开关应保留，并开启新增的日程页与天气页");
++     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=invalid\n").unwrap();
++-    assert_eq!(crate::model::Settings::load().visible_pages,[true;9]);
+++    assert_eq!(crate::model::Settings::load().visible_pages,[true;10]);
++ }
++ 
++ #[test]
++@@ -5663,10 +5663,10 @@ fn calendar_sync_result_does_not_enqueue_another_sync() {
++ fn page_order_persists_and_controls_navigation() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
++     let mut h=H::new();
++-    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
+++    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
++     h.app.settings.save();
++     let settings=crate::model::Settings::load();
++-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
+++    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
++     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
++     assert_eq!(restarted.page(),5);
++     for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
++@@ -5682,7 +5682,7 @@ fn page_order_persists_and_controls_navigation() {
++     assert_eq!(h.app.page,5);
++     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
++         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
++-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
+++        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8,9]);
++     }
++ }
++ 
++@@ -5709,9 +5709,9 @@ fn page_order_drag_applies_on_release_and_saves() {
++     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
++     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
++     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
++-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
+++    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8,9]);
++     draw(&mut h,vec![button(to,false)]);
++-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
+++    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8,9]);
++     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
++ }
++ 
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0002-fix-mifi-10-page_order.patch b/patches/0002-fix-mifi-10-page_order.patch
+new file mode 100644
+index 0000000..dbfcb19
+--- /dev/null
++++ b/patches/0002-fix-mifi-10-page_order.patch
+@@ -0,0 +1,125 @@
++From bb3dcb509bbdfda86d9aa6fd19e6df0c316dd5e5 Mon Sep 17 00:00:00 2001
++From: mifi-dev <dev@local>
++Date: Sat, 14 Nov 2026 22:39:57 +0800
++Subject: [PATCH 2/4] =?UTF-8?q?fix(mifi):=20=E8=A1=A5=E7=AC=AC=2010=20?=
++ =?UTF-8?q?=E9=A1=B5=E6=8F=8F=E8=BF=B0=E4=BF=AE=E5=A4=8D=E8=B6=8A=E7=95=8C?=
++ =?UTF-8?q?=EF=BC=9B=E6=81=A2=E5=A4=8D=20page=5Forder=20=E9=9D=9E=E6=B3=95?=
++ =?UTF-8?q?=E5=80=BC=E6=8B=92=E7=BB=9D=E8=AF=AD=E4=B9=89=EF=BC=9B=E6=9B=B4?=
++ =?UTF-8?q?=E6=96=B0=E9=A1=B5=E9=9D=A2=E6=95=B0=E7=9B=B8=E5=85=B3=E6=B5=8B?=
++ =?UTF-8?q?=E8=AF=95?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++---
++ src/extras.rs   |  2 +-
++ src/model.rs    | 17 ++++++++++-------
++ src/ui_tests.rs | 14 +++++++-------
++ 3 files changed, 18 insertions(+), 15 deletions(-)
++
++diff --git a/src/extras.rs b/src/extras.rs
++index c431c06..c50fde6 100644
++--- a/src/extras.rs
+++++ b/src/extras.rs
++@@ -1351,7 +1351,7 @@ impl App {
++                         });
++                         settings_label(ui,"功能页面");
++                         settings_card(ui,|ui|{
++-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报"];
+++                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","随身 WiFi 电量与低电量提醒"];
++                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
++                             #[derive(Clone)]
++                             struct PageDrag(usize);
++diff --git a/src/model.rs b/src/model.rs
++index 0dc3391..010fd8c 100644
++--- a/src/model.rs
+++++ b/src/model.rs
++@@ -327,14 +327,17 @@ impl Settings {
++                 }
++                 "page_order" => {
++                     if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
++-                        // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
++                         let total=crate::app::PAGE_NAMES.len();
++-                        for page in 0..total {
++-                            if order.len()>=total {break;}
++-                            if !order.contains(&page) {order.push(page);}
++-                        }
++-                        if order.len()==total && (0..total).all(|page|order.contains(&page)) {
++-                            s.page_order.copy_from_slice(&order);
+++                        // 先校验：不能越界、不能重复。非法配置整条丢弃，沿用默认顺序。
+++                        let sane=order.len()<=total
+++                            && order.iter().enumerate().all(|(i,&page)|page<total && !order[..i].contains(&page));
+++                        if sane {
+++                            // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
+++                            for page in 0..total {
+++                                if order.len()>=total {break;}
+++                                if !order.contains(&page) {order.push(page);}
+++                            }
+++                            if order.len()==total {s.page_order.copy_from_slice(&order);}
++                         }
++                     }
++                 }
++diff --git a/src/ui_tests.rs b/src/ui_tests.rs
++index 2063f14..6ff2ee5 100644
++--- a/src/ui_tests.rs
+++++ b/src/ui_tests.rs
++@@ -2326,7 +2326,7 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
++     h.app.shelf.items.clear();h.app.todos.items.clear();
++     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
++     h.hover(H::local(210.0,18.0),0.3);
++-    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,0]),(40.0,[8,7,6,5,4,3,2,1,0])] {
+++    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,9,0]),(40.0,[9,8,7,6,5,4,3,2,1,0])] {
++         for page in pages {
++             h.wheel(delta);
++             assert_eq!(h.app.page,page,"滚轮翻页不能被空的置物架或待办卡住");
++@@ -2430,9 +2430,9 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
++ }
++ 
++ #[test]
++-fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
+++fn navigation_wraps_between_all_pages_and_notification_settings_remain_accessible() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
++-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
+++    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,9);
++     h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
++     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
++ }
++@@ -2990,7 +2990,7 @@ fn battery_module_can_disable_only_the_power_warning() {
++ fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
++     let mut h=H::new();
++-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
+++    for page in [1,3,4,6,7,8,9] {h.app.set_page_visible(page,false);}
++     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
++     for expected in [2,5,0] {
++         h.click(H::local(398.0,68.0));
++@@ -3019,7 +3019,7 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
++     h.app.set_page_visible(4,false);
++     assert_eq!(h.app.page,0);
++     assert!(!h.app.is_editing());
++-    for page in [0,1,3,5,6,7,8] {h.app.set_page_visible(page,false);}
+++    for page in [0,1,3,5,6,7,8,9] {h.app.set_page_visible(page,false);}
++     assert_eq!(h.app.page,2);
++     h.app.set_page_visible(2,false);
++     assert!(h.app.settings.visible_pages[2],"不能关闭最后一个页面");
++@@ -5669,7 +5669,7 @@ fn page_order_persists_and_controls_navigation() {
++     assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
++     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
++     assert_eq!(restarted.page(),5);
++-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
+++    for page in [1,3,4,6,7,8,9] {h.app.set_page_visible(page,false);}
++     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
++     for expected in [5,2,0] {
++         h.click(H::local(398.0,68.0));
++@@ -8373,7 +8373,7 @@ fn background_services_follow_the_module_switch(){
++ 
++ #[test]
++ fn every_module_settings_tab_maps_to_its_page(){
++-    let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气"];
+++    let titles=["常规","音乐与歌词","专注","健康提醒","待办","置物","通知","邮箱","日程","关于","页面管理","AI 额度","天气","随身 WiFi"];
++     let mut pages:Vec<_>=(0..titles.len()).filter_map(crate::extras::settings_tab_module).collect();
++     for tab in 0..titles.len() {
++         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0003-test-9-10-page_order.patch b/patches/0003-test-9-10-page_order.patch
+new file mode 100644
+index 0000000..64b670e
+--- /dev/null
++++ b/patches/0003-test-9-10-page_order.patch
+@@ -0,0 +1,73 @@
++From 768574219bc439dd21bfbdbb5b4a0248c3edee61 Mon Sep 17 00:00:00 2001
++From: mifi-dev <dev@local>
++Date: Sat, 14 Nov 2026 22:50:34 +0800
++Subject: [PATCH 3/4] =?UTF-8?q?test:=20=E9=A1=B5=E9=9D=A2=E6=95=B0=209?=
++ =?UTF-8?q?=E2=86=9210=20=E5=90=8E=E5=90=8C=E6=AD=A5=E6=B5=8B=E8=AF=95?=
++ =?UTF-8?q?=E6=9C=9F=E6=9C=9B=EF=BC=9Bpage=5Forder=20=E6=81=A2=E5=A4=8D?=
++ =?UTF-8?q?=E3=80=8C=E5=AE=8C=E6=95=B4=E6=8E=92=E5=88=97=E3=80=8D=E6=A0=A1?=
++ =?UTF-8?q?=E9=AA=8C=E8=AF=AD=E4=B9=89?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++---
++ src/model.rs    | 9 +++++++--
++ src/ui_tests.rs | 8 ++++----
++ 2 files changed, 11 insertions(+), 6 deletions(-)
++
++diff --git a/src/model.rs b/src/model.rs
++index 010fd8c..2583a34 100644
++--- a/src/model.rs
+++++ b/src/model.rs
++@@ -329,8 +329,13 @@ impl Settings {
++                     if let Ok(mut order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
++                         let total=crate::app::PAGE_NAMES.len();
++                         // 先校验：不能越界、不能重复。非法配置整条丢弃，沿用默认顺序。
++-                        let sane=order.len()<=total
++-                            && order.iter().enumerate().all(|(i,&page)|page<total && !order[..i].contains(&page));
+++                        // 只接受「长度接近总数、且正好是 0..len 的一个排列」的顺序。
+++                        // 这样既能兼容旧版本更短的配置（缺的页补在末尾），又不会放过
+++                        // 含重复或乱序缺项的非法值。
+++                        let mut sorted=order.clone();
+++                        sorted.sort_unstable();
+++                        let exact=sorted.iter().copied().eq(0..order.len());
+++                        let sane=exact && order.len()>=total.saturating_sub(2);
++                         if sane {
++                             // 旧配置的页面数比现在少：缺的页按索引补到最后，已有顺序不变。
++                             for page in 0..total {
++diff --git a/src/ui_tests.rs b/src/ui_tests.rs
++index 6ff2ee5..614b6b7 100644
++--- a/src/ui_tests.rs
+++++ b/src/ui_tests.rs
++@@ -76,7 +76,7 @@ fn weather_content_tap_switches_both_ways_with_a_short_transition(){
++ #[test]
++ fn weather_content_tap_keeps_other_controls_independent(){
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
++-    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,0),(20.0,88.0,7)] {
+++    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,9),(20.0,88.0,7)] {
++         let mut h=H::new();h.app.settings.pet=false;
++         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
++         h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,..Default::default()});
++@@ -608,8 +608,8 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
++         crate::model::Settings::load().save();
++         let saved=std::fs::read_to_string(directory.join("settings.txt")).unwrap();
++         for line in legacy.lines().filter(|line|!line.starts_with("visible_pages=")&&!line.starts_with("page_order=")){assert!(saved.lines().any(|value|value==line),"升级保存不能改变旧设置：{line}");}
++-        assert!(saved.lines().any(|value|value=="visible_pages=101111111"),"旧页面开关应保留，并默认开启天气页");
++-        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8"),"旧顺序应保留，并把天气页接在最后");
+++        assert!(saved.lines().any(|value|value=="visible_pages=1011111111"),"旧页面开关应保留，并默认开启新增的天气页与随身 WiFi 页");
+++        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8,9"),"旧顺序应保留，并把新增页面接在最后");
++     }
++     std::fs::write(directory.join("mail-accounts.json"),br#"[{"email":"OldUser@qq.com","provider":"qq","enabled":true},{"email":"old@icloud.com","provider":"icloud","enabled":false}]"#).unwrap();
++     let accounts=crate::mail::load_accounts();
++@@ -2433,7 +2433,7 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
++ fn navigation_wraps_between_all_pages_and_notification_settings_remain_accessible() {
++     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
++     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,9);
++-    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
+++    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,68.0));assert_eq!(h.app.page,0);
++     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
++ }
++ 
++-- 
++2.55.0.windows.5
++
+diff --git a/patches/0004-docs-MSVC-gnu.patch b/patches/0004-docs-MSVC-gnu.patch
+new file mode 100644
+index 0000000..82b6e6a
+--- /dev/null
++++ b/patches/0004-docs-MSVC-gnu.patch
+@@ -0,0 +1,53 @@
++From 9af0c1c5ca53eac1235479dca84f54f83200958b Mon Sep 17 00:00:00 2001
++From: mifi-dev <dev@local>
++Date: Sat, 14 Nov 2026 22:56:46 +0800
++Subject: [PATCH 4/4] =?UTF-8?q?docs:=20=E8=AE=B0=E5=BD=95=E6=97=A0=20MSVC?=
++ =?UTF-8?q?=20=E7=8E=AF=E5=A2=83=E4=B8=8B=E7=9A=84=20gnu=20=E6=9E=84?=
++ =?UTF-8?q?=E5=BB=BA=E6=96=B9=E5=BC=8F=E4=B8=8E=E8=BF=90=E8=A1=8C=E9=99=90?=
++ =?UTF-8?q?=E5=88=B6?=
++MIME-Version: 1.0
++Content-Type: text/plain; charset=UTF-8
++Content-Transfer-Encoding: 8bit
++
++---
++ docs/mifi-battery.md | 27 +++++++++++++++++++++++++++
++ 1 file changed, 27 insertions(+)
++
++diff --git a/docs/mifi-battery.md b/docs/mifi-battery.md
++index c1360b1..b6de944 100644
++--- a/docs/mifi-battery.md
+++++ b/docs/mifi-battery.md
++@@ -70,3 +70,30 @@ mifi_cooldown=30
++ ```
++ 
++ 默认 `mifi_enabled=0`，需要在设置里手动开启，避免未使用该设备的用户产生无效网络请求。
+++
+++## 本地构建（无 MSVC / 无管理员权限）
+++
+++本机没有 MSVC、Windows SDK，且当前账户不是管理员，因此未使用官方 msvc 目标，改为从零搭建的
+++`x86_64-pc-windows-gnu` 工具链（rustc 1.100.0 gnu host + mingw-w64 gcc 16.2）。
+++
+++```bash
+++export PATH="/d/dev/msys64/msys64/mingw64/bin:/d/dev/rust/tcgnu/bin:$PATH"
+++export CARGO_HOME="D:/dev/rust/cargo"
+++cargo test --lib                              # 单元测试
+++RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --bin daozai
+++```
+++
+++产物：`target/release/daozai.exe`（约 20 MB，静态 CRT，只依赖系统 DLL）。
+++
+++已知差异与限制：
+++
+++| 项 | 官方 msvc 构建 | 本次 gnu 构建 |
+++|---|---|---|
+++| 目标三元组 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-gnu` |
+++| CRT | 静态（`.cargo/config.toml` 已配） | 需手动加 `+crt-static`，否则依赖 `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` |
+++| 图标资源 | 由 `build.rs` 调用 `rc.exe` 嵌入 | **未嵌入**（无 `rc.exe`，构建时跳过，任务栏/资源管理器显示默认图标） |
+++| 自动更新 | 拉官方 release 并覆盖自身 | 会拉官方 msvc 包覆盖，等于丢掉本构建 |
+++| 代码签名 | 有（官方签名） | 无，首次运行 SmartScreen 提示 |
+++| 单实例 | `tray::single_instance()` | 相同，官方岛仔在跑时本 exe 会立即退出（退出码 0） |
+++
+++结论：gnu 构建适合**本地验证功能**，不适合当正式分发产物；对外发布仍应以 msvc 构建为准。
++-- 
++2.55.0.windows.5
++
+diff --git a/src/mifi_ui.rs b/src/mifi_ui.rs
+index cd4c9c4..9a4780d 100644
+--- a/src/mifi_ui.rs
++++ b/src/mifi_ui.rs
+@@ -16,6 +16,8 @@ pub(crate) struct State {
+     /// 最后一次成功采样的 `HH:MM`，来自 `Env::clock`；断网后保持不变。
+     pub(crate) last_clock: Option<String>,
+     signature: String,
++    /// 监控是否已启用；未启用时界面必须显示「未启用」，不能显示成「离线」。
++    pub(crate) enabled: bool,
+ }
+ 
+ impl State {
+@@ -25,6 +27,7 @@ impl State {
+             snapshot: Snapshot::default(),
+             last_clock: None,
+             signature: String::new(),
++            enabled: false,
+         }
+     }
+ 
+@@ -44,6 +47,7 @@ impl State {
+     /// 每帧调用：配置变了就重建线程，收到了就更新快照。
+     pub fn pump(&mut self, settings: &Settings, env: &Env) {
+         let config = Self::config(settings);
++        self.enabled = config.enabled;
+         if !config.enabled {
+             if self.worker.take().is_some() {
+                 self.snapshot = Snapshot::default();
+@@ -114,7 +118,10 @@ impl App {
+             }
+         }
+ 
+-        let (status, status_ink) = if !snapshot.online {
++        let enabled = self.mifi.enabled;
++        let (status, status_ink) = if !enabled {
++            ("未启用", theme::DIM)
++        } else if !snapshot.online {
+             ("离线", theme::DIM)
+         } else if snapshot.charging {
+             (snapshot.charge_text, theme::CHARGE)
+@@ -130,14 +137,16 @@ impl App {
+         }
+ 
+         let stamp = self.mifi.last_clock.clone().unwrap_or_else(|| "--:--".to_string());
+-        let detail = if snapshot.online {
++        let detail = if !enabled {
++            "设置 →「随身 WiFi」里启用监控".to_string()
++        } else if snapshot.online {
+             format!("{stamp} 更新")
+         } else {
+             format!("离线 · 最后有效 {stamp}")
+         };
+         c.text(42.0, 118.0, &detail, size::TINY, W::Regular, theme::GRAY, H::Left);
+ 
+-        if !snapshot.online {
++        if enabled && !snapshot.online {
+             c.text(370.0, 118.0, "点击重试", size::TINY, W::Regular, theme::BLUE, H::Right);
+         }
+ 
+-- 
+2.55.0.windows.5
+
